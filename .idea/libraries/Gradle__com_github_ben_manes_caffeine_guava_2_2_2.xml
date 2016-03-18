@@ -1,0 +1,11 @@
+<component name="libraryTable">
+  <library name="Gradle: com.github.ben-manes.caffeine:guava:2.2.2">
+    <CLASSES>
+      <root url="jar://$USER_HOME$/.gradle/caches/modules-2/files-2.1/com.github.ben-manes.caffeine/guava/2.2.2/86f5049a23328388e081ed7207566065dbf1f55f/guava-2.2.2.jar!/" />
+    </CLASSES>
+    <JAVADOC />
+    <SOURCES>
+      <root url="jar://$USER_HOME$/.gradle/caches/modules-2/files-2.1/com.github.ben-manes.caffeine/guava/2.2.2/73f8b423d6e6c6bebe1493beb0ec8d5f42b0dd19/guava-2.2.2-sources.jar!/" />
+    </SOURCES>
+  </library>
+</component>

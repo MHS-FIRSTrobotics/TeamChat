@@ -1,0 +1,48 @@
+syntax = "proto3";
+option java_package = "org.teamclutch.chat.protobuf";
+
+message Packet {
+    oneof Type {
+        Data data = 1;
+        DataRequest request = 2;
+        NewUser new = 3;
+        Ping ping = 4;
+        DataPackage pkg = 5;
+        Servers servers = 6;
+    }
+}
+
+
+message Data {
+    string id = 1;
+    string username = 2;
+    string serverClientId = 3;
+    string data = 4;
+}
+
+message DataRequest {
+    string id = 1;
+}
+
+message NewUser {
+    string id = 1;
+    string username = 2;
+    bool node = 3;
+}
+
+message DataPackage {
+    repeated Data messages = 1;
+}
+
+message Ping {
+    int64 timeSent = 1;
+    string load = 2;
+}
+
+message Servers {
+    repeated Server server = 1;
+    message Server {
+        string id = 1;
+        string location = 2;
+    }
+}
