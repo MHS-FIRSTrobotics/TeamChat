@@ -1,6 +1,7 @@
 apply plugin: 'java'
 apply plugin: 'idea'
 apply plugin: 'com.google.protobuf'
+apply plugin: 'application'
 
 // In this section you declare where to find the dependencies of your project
 repositories {
@@ -23,6 +24,17 @@ protobuf {
     protoc {
         // Download from repositories
         artifact = 'com.google.protobuf:protoc:3.0.0-beta-2'
+    }
+}
+
+sourceCompatibility = 1.8
+version = '0.1'
+mainClassName = 'org.teamclutch.Main'
+jar {
+    zip64 = true
+    manifest {
+        attributes 'Implementation-Title': 'Clutch Chat',
+                'Implementation-Version': version
     }
 }
 
