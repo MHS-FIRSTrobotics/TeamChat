@@ -42,8 +42,15 @@ class ChatClient extends AbstractClient {
                     }
                 }
                 final Channel ch;
-                synchronized (servers) {
-                    ch = b.connect(servers.get(0), PORT).sync().channel();
+
+                try {
+                    synchronized (servers) {
+                        ch = b.connect(servers.get(0), PORT).sync().channel();
+                    }
+                } catch (Exception ex) {
+                    System.err.println("Attempt to connect failed to " + servers.get(0));
+                    Thread.sleep(5000);
+                    continue;
                 }
 
                 // Read commands from the stdin.

@@ -9,8 +9,6 @@ import com.google.common.net.InetAddresses;
 import com.google.common.util.concurrent.AbstractExecutionThreadService;
 import io.netty.bootstrap.ServerBootstrap;
 import io.netty.channel.*;
-import io.netty.channel.group.ChannelGroup;
-import io.netty.channel.group.DefaultChannelGroup;
 import io.netty.channel.nio.NioEventLoopGroup;
 import io.netty.channel.socket.SocketChannel;
 import io.netty.channel.socket.nio.NioServerSocketChannel;
@@ -24,7 +22,6 @@ import io.netty.handler.ssl.SslHandler;
 import io.netty.handler.ssl.util.SelfSignedCertificate;
 import io.netty.util.concurrent.Future;
 import io.netty.util.concurrent.GenericFutureListener;
-import io.netty.util.concurrent.GlobalEventExecutor;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
 import org.teamclutch.chat.protobuf.Message;
@@ -71,7 +68,7 @@ class ChatServer extends AbstractExecutionThreadService {
             b.group(bossGroup, workerGroup)
                     .channel(NioServerSocketChannel.class)
                     //.handler(new LoggingHandler(LogLevel.ERROR))
-                    .childHandler(new SecureChatServerInitializer(sslCtx));
+                    .childHandler(new SecureChatServerInitializer(sslCtx, eventBus, config));
 
             ChannelFuture future = null;
             while (isRunning() && future == null) {
@@ -107,15 +104,23 @@ class ChatServer extends AbstractExecutionThreadService {
     /**
      * Handles a server-side channel.
      */
-    private class SecureChatServerHandler extends SimpleChannelInboundHandler<String> {
-        final ChannelGroup channels = new DefaultChannelGroup(GlobalEventExecutor.INSTANCE);
+    @ChannelHandler.Sharable
+    private static class SecureChatServerHandler extends SimpleChannelInboundHandler<String> {
+        //final ChannelGroup channels = new DefaultChannelGroup(GlobalEventExecutor.INSTANCE);
+
         @NotNull Cache<String, DataMessage> cache = CaffeinatedGuava.build(Caffeine.newBuilder()
                 .expireAfterAccess(1, TimeUnit.DAYS)
                 .maximumSize(5000));
-        ConcurrentHashMap<String, String> usernameClientMap = new ConcurrentHashMap<>();
+        final ConcurrentHashMap<String, String> usernameClientMap = new ConcurrentHashMap<>();
         final ConcurrentHashMap<String, String> serverNodeMap = new ConcurrentHashMap<>();
-        ClientConfig serverConfig;
+        final ConcurrentHashMap<String, Channel> channels = new ConcurrentHashMap<>();
 
+        private ClientConfig serverConfig;
+        private final ClientConfig config;
+
+        private SecureChatServerHandler(ClientConfig config) {
+            this.config = config;
+        }
 
         @Override
         public void channelActive(@NotNull final ChannelHandlerContext ctx) {
@@ -137,7 +142,7 @@ class ChatServer extends AbstractExecutionThreadService {
                                         " cipher suite.\n")));
                         ctx.flush();
 
-                        channels.add(ctx.channel());
+                        //channels.put(ctx.channel());
                         //config.connected(ctx.channel());
                     });
         }
@@ -162,36 +167,22 @@ class ChatServer extends AbstractExecutionThreadService {
                     if (cache.getIfPresent(getId(data)) == null) {
                         cache.put(getId(data),
                                 new DataMessage(data));
-                        sendMessageToAll(ctx, decode);
+                        if (!data.getUsername().equals("")) { // Verify validity
+                            synchronized (usernameClientMap) {
+                                if (!usernameClientMap.containsKey(data.getUsername())) {
+                                    sendMessage(ctx.channel(), "Client Out-of-Spec 1", true);
+                                    addUser(ctx, data.getUsername(), data.getServerClientId(), false);
+                                }
+                            }
+                            sendMessageToAll(ctx, decode);
+                        }
                     }
                 }
             } else if (decode.getNew() != null) {
                 Message.NewUser newUser = decode.getNew();
                 String username = newUser.getUsername();
-                if (newUser.getNode()) {
-                    if (ctx.channel().remoteAddress() instanceof InetSocketAddress) {
-                        InetSocketAddress address = (InetSocketAddress) ctx.channel().remoteAddress();
-                        synchronized (serverNodeMap) {
-                            serverNodeMap.put(newUser.getId(), InetAddresses.toAddrString(address.getAddress()));
-                        }
-                    }
-
-                    Message.Servers.Builder servers = Message.Servers.newBuilder();
-                    synchronized (serverNodeMap) {
-                        for (Map.Entry<String, String> node : serverNodeMap.entrySet()) {
-                            servers.addServer(Message.Servers.Server.newBuilder().setId(node.getKey())
-                                    .setLocation(node.getValue()));
-                        }
-                    }
-                    sendMessageToAll(ctx, Message.Packet.newBuilder().setServers(servers).build());
-                }
-                if (!usernameClientMap.containsKey(username)) {
-                    usernameClientMap.put(username, newUser.getId());
-                    String message = username + " joined the chat.";
-                    sendMessageToAll(ctx, true, message);
-                } else {
-                    sendMessage((Channel) ctx, username + " already exists!", true);
-                }
+                String id = newUser.getId();
+                addUser(ctx, username, id, newUser.getNode());
 
             } else if (decode.getRequest() != null) {
                 Message.DataRequest request = decode.getRequest();
@@ -237,10 +228,41 @@ class ChatServer extends AbstractExecutionThreadService {
             if (close) {
                 final String username = data.getUsername();
                 sendMessageToAll(ctx, true, username + " has decided to leave :(");
+                channels.remove(data.getServerClientId());
                 if (usernameClientMap.containsKey(username)) {
                     usernameClientMap.remove(username);
                 }
                 ctx.close();
+            }
+        }
+
+        private void addUser(@NotNull ChannelHandlerContext ctx, String username, String id, boolean isNode) {
+            if (isNode) {
+                if (ctx.channel().remoteAddress() instanceof InetSocketAddress) {
+                    InetSocketAddress address = (InetSocketAddress) ctx.channel().remoteAddress();
+                    synchronized (serverNodeMap) {
+                        serverNodeMap.put(id, InetAddresses.toAddrString(address.getAddress()));
+                    }
+                }
+
+                Message.Servers.Builder servers = Message.Servers.newBuilder();
+                synchronized (serverNodeMap) {
+                    for (Map.Entry<String, String> node : serverNodeMap.entrySet()) {
+                        servers.addServer(Message.Servers.Server.newBuilder().setId(node.getKey())
+                                .setLocation(node.getValue()));
+                    }
+                }
+                sendMessageToAll(ctx, Message.Packet.newBuilder().setServers(servers).build());
+            }
+            channels.put(id, ctx.channel());
+            synchronized (usernameClientMap) {
+                if (!usernameClientMap.containsKey(username)) {
+                    usernameClientMap.put(username, id);
+                    String message = username + " joined the chat.";
+                    sendMessageToAll(ctx, true, message);
+                } else {
+                    sendMessage(ctx.channel(), username + " already exists!", true);
+                }
             }
         }
 
@@ -259,7 +281,8 @@ class ChatServer extends AbstractExecutionThreadService {
         private void sendMessageToAll(@Nullable ChannelHandlerContext ctx, boolean serverConfig, @NotNull String... message) {
             boolean includeMe = message.length > 1;
             checkArgument(!includeMe || ctx != null, "You must specify a ChannelHandlerContext if you want to exclude yourself!");
-            for (Channel c : channels) {
+            cleanChannelMap();
+            for (Channel c : channels.values()) {
                 if (includeMe && c == ctx.channel()) {
                     sendMessage(c, message[1], serverConfig);
                 } else {
@@ -271,12 +294,19 @@ class ChatServer extends AbstractExecutionThreadService {
         private void sendMessageToAll(@Nullable ChannelHandlerContext ctx, Message.@NotNull Packet... message) {
             boolean includeMe = message.length > 1;
             checkArgument(!includeMe || ctx != null, "You must specify a ChannelHandlerContext if you want to exclude yourself!");
-            for (Channel c : channels) {
+            cleanChannelMap();
+            for (Channel c : channels.values()) {
                 if (includeMe && c == ctx.channel()) {
                     sendMessage(c, message[1]);
                 } else {
                     sendMessage(c, message[0]);
                 }
+            }
+        }
+
+        private void cleanChannelMap() {
+            if (channels.containsKey("")) {
+                channels.remove("");
             }
         }
 
@@ -310,19 +340,24 @@ class ChatServer extends AbstractExecutionThreadService {
     }
 
     @NotNull
-    private String getId(Message.Data data) {
+    private static String getId(Message.Data data) {
         return data.getServerClientId() + ":" + data.getId();
     }
 
     /**
      * Creates a newly configured {@link ChannelPipeline} for a new channel.
      */
-    private class SecureChatServerInitializer extends ChannelInitializer<SocketChannel> {
-
+    private static class SecureChatServerInitializer extends ChannelInitializer<SocketChannel> {
+        private static SecureChatServerHandler handler;
         private final SslContext sslCtx;
 
-        SecureChatServerInitializer(SslContext sslCtx) {
+        SecureChatServerInitializer(SslContext sslCtx, EventBus bus, ClientConfig config) {
             this.sslCtx = sslCtx;
+            if (handler == null) {
+                handler = new SecureChatServerHandler(config);
+            }
+
+            bus.register(handler);
         }
 
         @Override
@@ -336,9 +371,8 @@ class ChatServer extends AbstractExecutionThreadService {
             pipeline.addLast(new StringEncoder());
 
             // and then business logic.
-            final SecureChatServerHandler secureChatServerHandler = new SecureChatServerHandler();
-            eventBus.register(secureChatServerHandler);
-            pipeline.addLast(secureChatServerHandler);
+
+            pipeline.addLast(handler);
         }
     }
 }
